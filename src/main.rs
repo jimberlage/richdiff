@@ -50,28 +50,31 @@ enum Change {
     MissingLine {
         line: u64,
     },
-    UnequalLengthLine {
-        line: u64,
-        file_type: FileType,
-    },
 }
 
 struct Metadata {
-    max_changes: u64,
-    line_lengths: (u64, u64),
     changes: Vec<Change>,
+    errors: Vec<csv::Error>,
+    line_lengths: (u64, u64),
+    max_changes: u64,
 }
 
 impl Metadata {
     fn new(max_changes: Option<u64>) -> Metadata {
         Metadata {
-            line_lengths: (0u64, 0u64),
             changes: vec![],
+            errors: vec![],
+            line_lengths: (0u64, 0u64),
             max_changes: max_changes.unwrap_or(DEFAULT_MAX_CHANGES),
         }
     }
 
-    fn compare_line(&mut self, line_number: u64, expected_line: csv::StringRecord, actual_line: csv::StringRecord) {
+    fn compare_line(
+        &mut self,
+        line_number: u64,
+        expected_line: csv::StringRecord,
+        actual_line: csv::StringRecord,
+    ) {
         let mut column_number = 1;
 
         for cells in expected_line.iter().zip_longest(actual_line.iter()) {
@@ -91,13 +94,13 @@ impl Metadata {
                         line: line_number,
                         column: column_number,
                     });
-                },
+                }
                 EitherOrBoth::Right(actual) => {
                     self.changes.push(Change::ExtraCell {
                         line: line_number,
                         column: column_number,
                     });
-                },
+                }
             }
 
             column_number += 1;
@@ -118,57 +121,40 @@ impl Metadata {
                     self.line_lengths.1 += 1;
 
                     match (maybe_expected, maybe_actual) {
-                        (Ok(expected_line), Ok(actual_line)) => self.compare_line(line_number, expected_line, actual_line),
+                        (Ok(expected_line), Ok(actual_line)) => {
+                            self.compare_line(line_number, expected_line, actual_line)
+                        }
                         (Err(expected_error), Err(actual_error)) => {
-                            let mut errors = vec![];
-                            match expected_error.kind() {
-                                csv::ErrorKind::UnequalLengths => self.changes.push(Change::UnequalLengthLine {line: line_number, file_type: FileType::Expected}),
-                                expected_error => errors.push(expected_error),
-                            };
-                            match actual_error.kind() {
-                                csv::ErrorKind::UnequalLengths => self.changes.push(Change::UnequalLengthLine {line: line_number, file_type: FileType::Actual}),
-                                actual_error => errors.push(actual_error),
-                            };
-                        },
-                        (Err(error), _) => {
-                            let mut errors = vec![];
-                            match error.kind() {
-                                csv::ErrorKind::UnequalLengths => self.changes.push(Change::UnequalLengthLine {line: line_number, file_type: FileType::Expected}),
-                                error => errors.push(error),
-                            };
-                        },
-                        (_, Err(error)) => {
-                            let mut errors = vec![];
-                            match error.kind() {
-                                csv::ErrorKind::UnequalLengths => self.changes.push(Change::UnequalLengthLine {line: line_number, file_type: FileType::Actual}),
-                                error => errors.push(error),
-                            };
-                        },
+                            self.errors.push(expected_error);
+                            self.errors.push(actual_error);
+                        }
+                        (Err(error), _) => self.errors.push(error),
+                        (_, Err(error)) => self.errors.push(error),
                     }
                 }
                 EitherOrBoth::Left(maybe_expected) => {
                     self.line_lengths.0 += 1;
 
                     match maybe_expected {
-                        Ok(record0) => (),
-                        Err(error) => (),
+                        Ok(_) => (),
+                        Err(error) => self.errors.push(error)
                     }
                 }
                 EitherOrBoth::Right(maybe_actual) => {
                     self.line_lengths.1 += 1;
 
                     match maybe_actual {
-                        Ok(record1) => (),
-                        Err(error) => (),
+                        Ok(_) => (),
+                        Err(error) => self.errors.push(error),
                     }
                 }
             }
 
-            line_number += 1;
-
-            if self.changes.len() >= self.max_changes as usize {
+            if !self.errors.is_empty() || self.changes.len() >= self.max_changes as usize {
                 break;
             }
+
+            line_number += 1;
         }
     }
 }
@@ -177,9 +163,20 @@ fn handle_crash<T: Debug>(errors: Vec<T>) {
     let mut log_filepath = env::temp_dir();
     log_filepath.push(format!("richdiff_crash_{:?}.log", SystemTime::now()));
     let mut log_file = File::create(log_filepath.clone()).unwrap();
-    log_file.write_all(errors.iter().map(|error| format!("{:?}", error)).join("\n").as_ref()).unwrap();
+    log_file
+        .write_all(
+            errors
+                .iter()
+                .map(|error| format!("{:?}", error))
+                .join("\n")
+                .as_ref(),
+        )
+        .unwrap();
 
-    eprintln!("An unexpected error occurred.  You can check the log at\n\n{:?}", log_filepath)
+    eprintln!(
+        "An unexpected error occurred.  You can check the log at\n\n{:?}",
+        log_filepath
+    )
 }
 
 fn get_reader<P: AsRef<Path>>(filepath: P, delimiter: Delimiter) -> csv::Result<csv::Reader<File>> {
@@ -189,18 +186,24 @@ fn get_reader<P: AsRef<Path>>(filepath: P, delimiter: Delimiter) -> csv::Result<
         Delimiter::Tab => b'\t',
     };
     csv::ReaderBuilder::new()
+        // With the expected file as the source of truth, we can't assume that it has a consistent number of rows.
+        // The flexible option ensures that doesn't surface as an error.
+        .flexible(true)
         .delimiter(delimiter_byte)
         .from_path(filepath)
 }
 
 fn handle_failed_reader(error: csv::Error, file: &str) -> Result<(), csv::Error> {
     match error.kind() {
-        csv::ErrorKind::Io(io_error) => {
-            match io_error.kind() {
-                io::ErrorKind::NotFound => Ok(eprintln!("{} does not exist - did you mistype the file name?", file)),
-                io::ErrorKind::PermissionDenied => Ok(eprintln!("{} cannot be read due to its permissions.", file)),
-                _ => Err(error),
+        csv::ErrorKind::Io(io_error) => match io_error.kind() {
+            io::ErrorKind::NotFound => Ok(eprintln!(
+                "{} does not exist - did you mistype the file name?",
+                file
+            )),
+            io::ErrorKind::PermissionDenied => {
+                Ok(eprintln!("{} cannot be read due to its permissions.", file))
             }
+            _ => Err(error),
         },
         _ => Err(error),
     }
@@ -250,7 +253,10 @@ fn main() {
     let delimiter0 = value_t!(matches, "delimiter0", Delimiter).unwrap_or(Delimiter::Comma);
     let delimiter1 = value_t!(matches, "delimiter1", Delimiter).unwrap_or(Delimiter::Comma);
 
-    match (get_reader(expected_filepath, delimiter0), get_reader(actual_filepath, delimiter1)) {
+    match (
+        get_reader(expected_filepath, delimiter0),
+        get_reader(actual_filepath, delimiter1),
+    ) {
         (Ok(ref mut rdr0), Ok(ref mut rdr1)) => {
             let mut metadata = Metadata::new(None);
             metadata.compare_lines(rdr0, rdr1);
