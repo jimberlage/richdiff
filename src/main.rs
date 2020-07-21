@@ -24,6 +24,11 @@ arg_enum! {
 
 const DEFAULT_MAX_CHANGES: u64 = 50;
 
+enum FileType {
+    Expected,
+    Actual,
+}
+
 enum Change {
     MismatchedCell {
         line: u64,
@@ -47,6 +52,7 @@ enum Change {
     },
     UnequalLengthLine {
         line: u64,
+        file_type: FileType,
     },
 }
 
@@ -113,9 +119,31 @@ impl Metadata {
 
                     match (maybe_expected, maybe_actual) {
                         (Ok(expected_line), Ok(actual_line)) => self.compare_line(line_number, expected_line, actual_line),
-                        (Err(expected_error), Err(actual_error)) => (),
-                        (Err(error), _) => (),
-                        (_, Err(error)) => (),
+                        (Err(expected_error), Err(actual_error)) => {
+                            let mut errors = vec![];
+                            match expected_error.kind() {
+                                csv::ErrorKind::UnequalLengths => self.changes.push(Change::UnequalLengthLine {line: line_number, file_type: FileType::Expected}),
+                                expected_error => errors.push(expected_error),
+                            };
+                            match actual_error.kind() {
+                                csv::ErrorKind::UnequalLengths => self.changes.push(Change::UnequalLengthLine {line: line_number, file_type: FileType::Actual}),
+                                actual_error => errors.push(actual_error),
+                            };
+                        },
+                        (Err(error), _) => {
+                            let mut errors = vec![];
+                            match error.kind() {
+                                csv::ErrorKind::UnequalLengths => self.changes.push(Change::UnequalLengthLine {line: line_number, file_type: FileType::Expected}),
+                                error => errors.push(error),
+                            };
+                        },
+                        (_, Err(error)) => {
+                            let mut errors = vec![];
+                            match error.kind() {
+                                csv::ErrorKind::UnequalLengths => self.changes.push(Change::UnequalLengthLine {line: line_number, file_type: FileType::Actual}),
+                                error => errors.push(error),
+                            };
+                        },
                     }
                 }
                 EitherOrBoth::Left(maybe_expected) => {
@@ -204,25 +232,25 @@ fn main() {
                 .case_insensitive(true),
         )
         .arg(
-            Arg::with_name("FILE0")
-                .help("The path to the first file.")
+            Arg::with_name("EXPECTED")
+                .help("The path to the file that is the source of truth.")
                 .required(true)
                 .index(1),
         )
         .arg(
-            Arg::with_name("FILE1")
-                .help("The path to the second file.")
+            Arg::with_name("ACTUAL")
+                .help("The path to the file that needs to look like the source of truth.")
                 .required(true)
                 .index(2),
         )
         .get_matches();
 
-    let file0 = matches.value_of("FILE0").unwrap();
-    let file1 = matches.value_of("FILE1").unwrap();
+    let expected_filepath = matches.value_of("EXPECTED").unwrap();
+    let actual_filepath = matches.value_of("ACTUAL").unwrap();
     let delimiter0 = value_t!(matches, "delimiter0", Delimiter).unwrap_or(Delimiter::Comma);
     let delimiter1 = value_t!(matches, "delimiter1", Delimiter).unwrap_or(Delimiter::Comma);
 
-    match (get_reader(file0, delimiter0), get_reader(file1, delimiter1)) {
+    match (get_reader(expected_filepath, delimiter0), get_reader(actual_filepath, delimiter1)) {
         (Ok(ref mut rdr0), Ok(ref mut rdr1)) => {
             let mut metadata = Metadata::new(None);
             metadata.compare_lines(rdr0, rdr1);
@@ -230,10 +258,10 @@ fn main() {
         }
         (Err(e0), Err(e1)) => {
             let mut errors = vec![];
-            if let Err(error) = handle_failed_reader(e0, file0) {
+            if let Err(error) = handle_failed_reader(e0, expected_filepath) {
                 errors.push(error);
             }
-            if let Err(error) = handle_failed_reader(e1, file1) {
+            if let Err(error) = handle_failed_reader(e1, actual_filepath) {
                 errors.push(error);
             }
             if !errors.is_empty() {
@@ -242,7 +270,7 @@ fn main() {
         }
         (Err(e), _) => {
             let mut errors = vec![];
-            if let Err(error) = handle_failed_reader(e, file0) {
+            if let Err(error) = handle_failed_reader(e, expected_filepath) {
                 errors.push(error);
             }
             if !errors.is_empty() {
@@ -251,7 +279,7 @@ fn main() {
         }
         (_, Err(e)) => {
             let mut errors = vec![];
-            if let Err(error) = handle_failed_reader(e, file1) {
+            if let Err(error) = handle_failed_reader(e, actual_filepath) {
                 errors.push(error);
             }
             if !errors.is_empty() {
