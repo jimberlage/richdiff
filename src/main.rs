@@ -1,17 +1,23 @@
 extern crate clap;
 extern crate csv;
 extern crate itertools;
+extern crate serde;
+extern crate serde_json;
 
+mod problems;
+
+use std::collections::HashSet;
 use std::env;
 use std::fmt::Debug;
 use std::fs::File;
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
+use std::process::exit;
 use std::time::SystemTime;
 
 use clap::{arg_enum, value_t, App, Arg};
 use itertools::{EitherOrBoth, Itertools};
-use std::io::Write;
+use serde_json::json;
 
 arg_enum! {
     #[derive(PartialEq, Debug)]
@@ -22,58 +28,39 @@ arg_enum! {
     }
 }
 
-const DEFAULT_MAX_CHANGES: u64 = 50;
+const DEFAULT_MAX_PROBLEMS: usize = 50;
 
-enum FileType {
-    Expected,
-    Actual,
-}
-
-enum Change {
-    MismatchedCell {
-        line: u64,
-        column: u64,
-        expected: String,
-        actual: String,
-    },
-    ExtraCell {
-        line: u64,
-        column: u64,
-    },
-    MissingCell {
-        line: u64,
-        column: u64,
-    },
-    ExtraLine {
-        line: u64,
-    },
-    MissingLine {
-        line: u64,
-    },
-}
-
-struct Metadata {
-    changes: Vec<Change>,
+#[derive(Debug)]
+struct Summary {
+    problems: problems::Problems,
     errors: Vec<csv::Error>,
-    line_lengths: (u64, u64),
-    max_changes: u64,
+    line_lengths: (usize, usize),
+    max_problems: usize,
 }
 
-impl Metadata {
-    fn new(max_changes: Option<u64>) -> Metadata {
-        Metadata {
-            changes: vec![],
+struct DisplaySummary {
+    actual_filename: String,
+    num_problems: usize,
+    found_max_problems: bool,
+    problem_categories: Vec<problems::ProblemCategory>,
+    problems: Vec<problems::Problem>,
+}
+
+impl Summary {
+    fn new(max_problems: Option<usize>) -> Summary {
+        Summary {
+            problems: problems::Problems::new(max_problems.unwrap_or(DEFAULT_MAX_PROBLEMS)),
             errors: vec![],
-            line_lengths: (0u64, 0u64),
-            max_changes: max_changes.unwrap_or(DEFAULT_MAX_CHANGES),
+            line_lengths: (0usize, 0usize),
+            max_problems: max_problems.unwrap_or(DEFAULT_MAX_PROBLEMS),
         }
     }
 
     fn compare_line(
         &mut self,
-        line_number: u64,
-        expected_line: csv::StringRecord,
-        actual_line: csv::StringRecord,
+        line_number: usize,
+        expected_line: &csv::StringRecord,
+        actual_line: &csv::StringRecord,
     ) {
         let mut column_number = 1;
 
@@ -81,33 +68,32 @@ impl Metadata {
             match cells {
                 EitherOrBoth::Both(expected, actual) => {
                     if expected != actual {
-                        self.changes.push(Change::MismatchedCell {
-                            line: line_number,
-                            column: column_number,
-                            expected: expected.to_string(),
-                            actual: actual.to_string(),
-                        });
+                        self.problems
+                            .insert_line_problem(problems::LineProblem::MismatchedCell {
+                                line: line_number,
+                                column: column_number,
+                                expected: expected.to_string(),
+                                actual: actual.to_string(),
+                            });
                     }
                 }
-                EitherOrBoth::Left(expected) => {
-                    self.changes.push(Change::MissingCell {
-                        line: line_number,
-                        column: column_number,
-                    });
+                EitherOrBoth::Left(_) => {
+                    self.problems
+                        .insert_line_problem(problems::LineProblem::MissingCell {
+                            line: line_number,
+                            column: column_number,
+                        });
                 }
-                EitherOrBoth::Right(actual) => {
-                    self.changes.push(Change::ExtraCell {
-                        line: line_number,
-                        column: column_number,
-                    });
+                EitherOrBoth::Right(_) => {
+                    self.problems
+                        .insert_line_problem(problems::LineProblem::ExtraCell {
+                            line: line_number,
+                            column: column_number,
+                        });
                 }
             }
 
             column_number += 1;
-
-            if self.changes.len() >= self.max_changes as usize {
-                break;
-            }
         }
     }
 
@@ -122,7 +108,7 @@ impl Metadata {
 
                     match (maybe_expected, maybe_actual) {
                         (Ok(expected_line), Ok(actual_line)) => {
-                            self.compare_line(line_number, expected_line, actual_line)
+                            self.compare_line(line_number, &expected_line, &actual_line)
                         }
                         (Err(expected_error), Err(actual_error)) => {
                             self.errors.push(expected_error);
@@ -136,30 +122,42 @@ impl Metadata {
                     self.line_lengths.0 += 1;
 
                     match maybe_expected {
-                        Ok(_) => (),
-                        Err(error) => self.errors.push(error)
+                        Ok(_) => self.problems.insert_missing_lines_problem(line_number),
+                        Err(error) => self.errors.push(error),
                     }
                 }
                 EitherOrBoth::Right(maybe_actual) => {
                     self.line_lengths.1 += 1;
 
                     match maybe_actual {
-                        Ok(_) => (),
+                        Ok(_) => self.problems.insert_extra_lines_problem(line_number),
                         Err(error) => self.errors.push(error),
                     }
                 }
             }
 
-            if !self.errors.is_empty() || self.changes.len() >= self.max_changes as usize {
+            if !self.errors.is_empty() {
                 break;
             }
 
             line_number += 1;
         }
     }
+
+    fn to_report_data(&self, actual_filename: &str) -> serde_json::Value {
+        let mut categories = HashSet::new();
+        let mut problems = vec![];
+
+        for problem in self.problems.displayable_problems() {
+            categories.insert(problem.category());
+            problems.push(problem);
+        }
+
+        json!({})
+    }
 }
 
-fn handle_crash<T: Debug>(errors: Vec<T>) {
+fn handle_crash<T: Debug>(errors: &Vec<T>) {
     let mut log_filepath = env::temp_dir();
     log_filepath.push(format!("richdiff_crash_{:?}.log", SystemTime::now()));
     let mut log_file = File::create(log_filepath.clone()).unwrap();
@@ -176,7 +174,9 @@ fn handle_crash<T: Debug>(errors: Vec<T>) {
     eprintln!(
         "An unexpected error occurred.  You can check the log at\n\n{:?}",
         log_filepath
-    )
+    );
+
+    exit(1);
 }
 
 fn get_reader<P: AsRef<Path>>(filepath: P, delimiter: Delimiter) -> csv::Result<csv::Reader<File>> {
@@ -215,21 +215,21 @@ fn main() {
         .author("Jim Berlage <james.berlage@gmail.com>")
         .about("Provides a rich diff of changes between two large CSVs.")
         .arg(
-            Arg::with_name("delimiter0")
-                .short("d")
-                .long("delimiter0")
+            Arg::with_name("expected-delimiter")
+                .short("e")
+                .long("expected-delimiter")
                 .value_name("DELIMITER")
-                .help("Indicates the delimiter of the first file.")
+                .help("Indicates the delimiter of the expected file.")
                 .takes_value(true)
                 .possible_values(&Delimiter::variants())
                 .case_insensitive(true),
         )
         .arg(
-            Arg::with_name("delimiter1")
-                .short("e")
-                .long("delimiter1")
+            Arg::with_name("actual-delimiter")
+                .short("a")
+                .long("actual-delimiter")
                 .value_name("DELIMITER")
-                .help("Indicates the delimiter of the second file.")
+                .help("Indicates the delimiter of the actual file.")
                 .takes_value(true)
                 .possible_values(&Delimiter::variants())
                 .case_insensitive(true),
@@ -250,17 +250,23 @@ fn main() {
 
     let expected_filepath = matches.value_of("EXPECTED").unwrap();
     let actual_filepath = matches.value_of("ACTUAL").unwrap();
-    let delimiter0 = value_t!(matches, "delimiter0", Delimiter).unwrap_or(Delimiter::Comma);
-    let delimiter1 = value_t!(matches, "delimiter1", Delimiter).unwrap_or(Delimiter::Comma);
+    let expected_delimiter =
+        value_t!(matches, "expected-delimiter", Delimiter).unwrap_or(Delimiter::Comma);
+    let actual_delimiter =
+        value_t!(matches, "actual-delimiter", Delimiter).unwrap_or(Delimiter::Comma);
 
     match (
-        get_reader(expected_filepath, delimiter0),
-        get_reader(actual_filepath, delimiter1),
+        get_reader(expected_filepath, expected_delimiter),
+        get_reader(actual_filepath, actual_delimiter),
     ) {
         (Ok(ref mut rdr0), Ok(ref mut rdr1)) => {
-            let mut metadata = Metadata::new(None);
+            let mut metadata = Summary::new(None);
             metadata.compare_lines(rdr0, rdr1);
-            ()
+            if !metadata.errors.is_empty() {
+                handle_crash(&metadata.errors);
+            }
+
+            dbg!(metadata);
         }
         (Err(e0), Err(e1)) => {
             let mut errors = vec![];
@@ -271,7 +277,7 @@ fn main() {
                 errors.push(error);
             }
             if !errors.is_empty() {
-                handle_crash(errors);
+                handle_crash(&errors);
             }
         }
         (Err(e), _) => {
@@ -280,7 +286,7 @@ fn main() {
                 errors.push(error);
             }
             if !errors.is_empty() {
-                handle_crash(errors);
+                handle_crash(&errors);
             }
         }
         (_, Err(e)) => {
@@ -289,7 +295,7 @@ fn main() {
                 errors.push(error);
             }
             if !errors.is_empty() {
-                handle_crash(errors);
+                handle_crash(&errors);
             }
         }
     }

@@ -9,4 +9,7 @@ edition = "2018"
 [dependencies]
 clap = "2"
 csv = "1"
+handlebars = "3"
 itertools = "0"
+serde = "1"
+serde_json = "1"

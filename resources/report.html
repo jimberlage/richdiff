@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Report on {{actual_filename}}</title>
+  <style type="text/css">
+    .problems-circle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background-color: red;
+      color: white;
+      font-size: 1.8rem;
+      height: 6rem;
+      width: 6rem;
+      border-radius: 50%;
+    }
+  </style>
+</head>
+<body>
+  <h1>Report of problems with {{actual_filename}}</h1>
+  <p>
+    <span class="problems-circle">
+      {{num_problems}}{{#if found_max_problems}}*{{/if}}
+    </span>
+    <span>problems</span>
+  </p>{{#if found_max_problems}}
+  <p>* More problems may exist in the file, since the number of problems reached the maximum allowed.</p>{{/if}}
+  <h2>Categories of errors</h2>
+  <ol class="problem-categories">{{#each problem_categories}}
+    <li class="problem-category-description">
+      {{../description}}
+    </li>{{/each}}
+  </ol>
+  <h2>Problems</h2>
+  <ol class="problems">{{#each problems}}
+    <li class="problem-description">
+      {{../description}}
+    </li>{{/each}}
+  </ol>
+</body>
+</html>
