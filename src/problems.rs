@@ -5,7 +5,7 @@ use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 use itertools::Itertools;
 
-#[derive(Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub enum ProblemCategory {
     MismatchedCells,
     ExtraCells,
@@ -191,7 +191,7 @@ impl Serialize for Problem {
 }
 
 #[derive(Debug, Serialize)]
-struct DisplayProblems {
+pub struct DisplayProblems {
     actual_filename: String,
     num_problems: usize,
     found_max_problems: bool,
@@ -302,7 +302,7 @@ impl Problems {
         let mut categories = HashSet::new();
         let mut problems = vec![];
 
-        for problem in self.problems.displayable_problems() {
+        for problem in self.displayable_problems() {
             categories.insert(problem.category());
             problems.push(problem);
         }
@@ -311,7 +311,7 @@ impl Problems {
             actual_filename: actual_filename.to_string(),
             num_problems: self.len(),
             found_max_problems: self.len() >= self.max_problems_to_display,
-            problem_categories: categories.iter().sorted().collect(),
+            problem_categories: categories.iter().sorted().cloned().collect(),
             problems,
         }
     }

@@ -19,6 +19,8 @@ use clap::{arg_enum, value_t, App, Arg};
 use itertools::{EitherOrBoth, Itertools};
 use serde_json::json;
 
+use problems::{Problems, ProblemCategory};
+
 arg_enum! {
     #[derive(PartialEq, Debug)]
     enum Delimiter {
@@ -32,9 +34,8 @@ const DEFAULT_MAX_PROBLEMS: usize = 50;
 
 #[derive(Debug)]
 struct Summary {
-    problems: problems::Problems,
+    problems: Problems,
     errors: Vec<csv::Error>,
-    line_lengths: (usize, usize),
     max_problems: usize,
 }
 
@@ -42,16 +43,15 @@ struct DisplaySummary {
     actual_filename: String,
     num_problems: usize,
     found_max_problems: bool,
-    problem_categories: Vec<problems::ProblemCategory>,
+    problem_categories: Vec<ProblemCategory>,
     problems: Vec<problems::Problem>,
 }
 
 impl Summary {
     fn new(max_problems: Option<usize>) -> Summary {
         Summary {
-            problems: problems::Problems::new(max_problems.unwrap_or(DEFAULT_MAX_PROBLEMS)),
+            problems: Problems::new(max_problems.unwrap_or(DEFAULT_MAX_PROBLEMS)),
             errors: vec![],
-            line_lengths: (0usize, 0usize),
             max_problems: max_problems.unwrap_or(DEFAULT_MAX_PROBLEMS),
         }
     }
@@ -103,9 +103,6 @@ impl Summary {
         for lines in rdr0.records().zip_longest(rdr1.records()) {
             match lines {
                 EitherOrBoth::Both(maybe_expected, maybe_actual) => {
-                    self.line_lengths.0 += 1;
-                    self.line_lengths.1 += 1;
-
                     match (maybe_expected, maybe_actual) {
                         (Ok(expected_line), Ok(actual_line)) => {
                             self.compare_line(line_number, &expected_line, &actual_line)
@@ -119,16 +116,12 @@ impl Summary {
                     }
                 }
                 EitherOrBoth::Left(maybe_expected) => {
-                    self.line_lengths.0 += 1;
-
                     match maybe_expected {
                         Ok(_) => self.problems.insert_missing_lines_problem(line_number),
                         Err(error) => self.errors.push(error),
                     }
                 }
                 EitherOrBoth::Right(maybe_actual) => {
-                    self.line_lengths.1 += 1;
-
                     match maybe_actual {
                         Ok(_) => self.problems.insert_extra_lines_problem(line_number),
                         Err(error) => self.errors.push(error),
