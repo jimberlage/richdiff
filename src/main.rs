@@ -1,25 +1,26 @@
 extern crate clap;
 extern crate csv;
+extern crate handlebars;
 extern crate itertools;
 extern crate serde;
 extern crate serde_json;
 
 mod problems;
 
-use std::collections::HashSet;
 use std::env;
 use std::fmt::Debug;
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Error, Write};
 use std::path::Path;
 use std::process::exit;
 use std::time::SystemTime;
 
 use clap::{arg_enum, value_t, App, Arg};
+use handlebars::{Handlebars, RenderError, TemplateError};
 use itertools::{EitherOrBoth, Itertools};
-use serde_json::json;
 
-use problems::{Problems, ProblemCategory};
+use problems::Problems;
+
 
 arg_enum! {
     #[derive(PartialEq, Debug)]
@@ -31,20 +32,51 @@ arg_enum! {
 }
 
 const DEFAULT_MAX_PROBLEMS: usize = 50;
+const REPORT_TEMPLATE: &str = include_str!("../resources/report.html");
+
+#[derive(Debug)]
+enum ReportError {
+    IO(io::Error),
+    Render(RenderError),
+    Template(TemplateError),
+}
+
+impl From<io::Error> for ReportError {
+    fn from(error: Error) -> Self {
+        ReportError::IO(error)
+    }
+}
+
+impl From<RenderError> for ReportError {
+    fn from(error: RenderError) -> Self {
+        ReportError::Render(error)
+    }
+}
+
+impl From<TemplateError> for ReportError {
+    fn from(error: TemplateError) -> Self {
+        ReportError::Template(error)
+    }
+}
+
+fn generate_report<P: AsRef<Path>>(
+    problems: &Problems,
+    actual_filepath: &str,
+    report_filepath: P,
+) -> Result<(), ReportError> {
+    let mut registry = Handlebars::new();
+    registry.register_template_string("report", REPORT_TEMPLATE)?;
+    let report_contents = registry.render("report", &problems.display_data(actual_filepath))?;
+    let mut report_file = File::create(report_filepath)?;
+    report_file.write_all(report_contents.as_bytes())?;
+    Ok(())
+}
 
 #[derive(Debug)]
 struct Summary {
     problems: Problems,
     errors: Vec<csv::Error>,
     max_problems: usize,
-}
-
-struct DisplaySummary {
-    actual_filename: String,
-    num_problems: usize,
-    found_max_problems: bool,
-    problem_categories: Vec<ProblemCategory>,
-    problems: Vec<problems::Problem>,
 }
 
 impl Summary {
@@ -115,18 +147,14 @@ impl Summary {
                         (_, Err(error)) => self.errors.push(error),
                     }
                 }
-                EitherOrBoth::Left(maybe_expected) => {
-                    match maybe_expected {
-                        Ok(_) => self.problems.insert_missing_lines_problem(line_number),
-                        Err(error) => self.errors.push(error),
-                    }
-                }
-                EitherOrBoth::Right(maybe_actual) => {
-                    match maybe_actual {
-                        Ok(_) => self.problems.insert_extra_lines_problem(line_number),
-                        Err(error) => self.errors.push(error),
-                    }
-                }
+                EitherOrBoth::Left(maybe_expected) => match maybe_expected {
+                    Ok(_) => self.problems.insert_missing_lines_problem(line_number),
+                    Err(error) => self.errors.push(error),
+                },
+                EitherOrBoth::Right(maybe_actual) => match maybe_actual {
+                    Ok(_) => self.problems.insert_extra_lines_problem(line_number),
+                    Err(error) => self.errors.push(error),
+                },
             }
 
             if !self.errors.is_empty() {
@@ -135,18 +163,6 @@ impl Summary {
 
             line_number += 1;
         }
-    }
-
-    fn to_report_data(&self, actual_filename: &str) -> serde_json::Value {
-        let mut categories = HashSet::new();
-        let mut problems = vec![];
-
-        for problem in self.problems.displayable_problems() {
-            categories.insert(problem.category());
-            problems.push(problem);
-        }
-
-        json!({})
     }
 }
 
@@ -253,13 +269,17 @@ fn main() {
         get_reader(actual_filepath, actual_delimiter),
     ) {
         (Ok(ref mut rdr0), Ok(ref mut rdr1)) => {
-            let mut metadata = Summary::new(None);
-            metadata.compare_lines(rdr0, rdr1);
-            if !metadata.errors.is_empty() {
-                handle_crash(&metadata.errors);
+            let mut summary = Summary::new(None);
+            summary.compare_lines(rdr0, rdr1);
+            if !summary.errors.is_empty() {
+                handle_crash(&summary.errors);
             }
 
-            dbg!(metadata);
+            if let Err(report_error) =
+                generate_report(&summary.problems, actual_filepath, "out.html")
+            {
+                handle_crash(&vec![report_error]);
+            }
         }
         (Err(e0), Err(e1)) => {
             let mut errors = vec![];

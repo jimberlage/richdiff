@@ -1,9 +1,9 @@
 use std::cmp::min;
 use std::collections::HashSet;
 
+use itertools::Itertools;
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
-use itertools::Itertools;
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub enum ProblemCategory {
@@ -174,15 +174,23 @@ impl Serialize for Problem {
             Self::File(FileProblem::ExtraLines(ExtraLinesProblem { line, num_extra })) => {
                 problem.serialize_entry("type", "Extra line")?;
                 problem.serialize_entry("color", "green")?;
-                problem
-                    .serialize_entry("description", &format!("Line {} was not expected.", line))?;
+                problem.serialize_entry(
+                    "description",
+                    &format!(
+                        "There were {} extra lines, starting with line {}.",
+                        num_extra, line
+                    ),
+                )?;
             }
             Self::File(FileProblem::MissingLines(MissingLinesProblem { line, num_missing })) => {
                 problem.serialize_entry("type", "Missing line")?;
                 problem.serialize_entry("color", "blue")?;
                 problem.serialize_entry(
                     "description",
-                    &format!("Line {} was expected, but not present.", line),
+                    &format!(
+                        "There were {} lines missing, ending at line {}.",
+                        num_missing, line
+                    ),
                 )?;
             }
         };
