@@ -203,6 +203,7 @@ pub struct DisplayProblems {
     actual_filename: String,
     num_problems: usize,
     found_max_problems: bool,
+    found_any_problems: bool,
     problem_categories: Vec<ProblemCategory>,
     problems: Vec<Problem>,
 }
@@ -319,6 +320,7 @@ impl Problems {
             actual_filename: actual_filename.to_string(),
             num_problems: self.len(),
             found_max_problems: self.len() >= self.max_problems_to_display,
+            found_any_problems: self.len() > 0,
             problem_categories: categories.iter().sorted().cloned().collect(),
             problems,
         }
