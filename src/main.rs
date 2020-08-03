@@ -31,7 +31,7 @@ arg_enum! {
     }
 }
 
-const DEFAULT_MAX_PROBLEMS: usize = 50;
+const DEFAULT_MAX_PROBLEMS: usize = 5000;
 const REPORT_TEMPLATE: &str = include_str!("../resources/report.html");
 
 #[derive(Debug)]

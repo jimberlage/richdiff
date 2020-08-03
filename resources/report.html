@@ -31,22 +31,22 @@
   <h2>{{actual_filename}}</h2>
   <p>
     <span class="problems-circle">
-      {{num_problems}}{{#if found_max_problems}}*{{/if}}
+      {{num_problems}}
     </span>
     <span class="problems-text">problems</span>
   </p>{{#if found_any_problems}}{{#if found_max_problems}}
-  <p>* More problems may exist in the file, since the number of problems reached the maximum allowed.</p>{{/if}}
+  <p>More problems may exist in the file, since the number of problems reached the maximum allowed.</p>{{/if}}
   <h2>Categories of errors</h2>
   <ol class="problem-categories">{{#each problem_categories}}
     <li class="problem-category-description">
-      {{../description}}
+      {{description}}
     </li>{{/each}}
   </ol>
   <h2>Problems</h2>
   <ol class="problems">{{#each problems}}
     <li class="problem-description">
-      <span style="color: {{../color}};">{{../type}}</span>
-      {{../description}}
+      <span style="color: {{color}};">{{type}}</span>
+      {{description}}
     </li>{{/each}}
   </ol>{{/if}}
 </body>
